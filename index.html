@@ -1282,11 +1282,11 @@
 
   function initAdmin(){
     var savedId = localStorage.getItem('caravela_admin_session');
+    // O Painel do Barbeiro (agenda, resumo, faltas e Confirmar Corte) passou
+    // a viver em /dashboard.html; a sessão fica na mesma localStorage key,
+    // por isso quem já está autenticado é logo reencaminhado para lá.
     if (savedId && ADMIN_BARBERS.some(function(b){ return b.id === savedId; })) {
-      adminState.barberId = savedId;
-      document.getElementById('admin-auth').innerHTML = '';
-      document.getElementById('admin-logout').hidden = false;
-      loadState().then(showAdminDashboard);
+      location.href = '/dashboard.html';
       return;
     }
     document.getElementById('admin-dashboard').hidden = true;
@@ -1364,11 +1364,8 @@
   }
 
   function completeAdminLogin(){
-    adminState.barberId = adminAuthState.barber.id;
     localStorage.setItem('caravela_admin_session', adminAuthState.barber.id);
-    document.getElementById('admin-auth').innerHTML = '';
-    document.getElementById('admin-logout').hidden = false;
-    showAdminDashboard();
+    location.href = '/dashboard.html';
   }
 
   document.getElementById('admin-logout').addEventListener('click', function(){

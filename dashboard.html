@@ -203,6 +203,7 @@ window.DASH_CONFIG = {
         <button id="v-lista" aria-pressed="false">Lista</button>
         <button id="v-resumo" aria-pressed="false">Resumo</button>
         <button id="v-faltas" aria-pressed="false">Faltas</button>
+        <button id="v-cliente" aria-pressed="false">Cliente</button>
       </div>
       <span class="live" id="hint" style="color:var(--faint)">Toca num espaço vazio para marcar</span>
     </div>
@@ -443,7 +444,7 @@ window.DASH_CONFIG = {
   function render(){
     renderDate(); renderStats();
     $('hint').hidden = S.view !== 'agenda';
-    if (S.view === 'agenda') renderAgenda(); else if (S.view === 'lista') renderList(); else if (S.view === 'faltas') renderFaltas(); else renderResumo();
+    if (S.view === 'agenda') renderAgenda(); else if (S.view === 'lista') renderList(); else if (S.view === 'faltas') renderFaltas(); else if (S.view === 'cliente') renderCliente(); else renderResumo();
   }
 
   /* ---------- resumo: lucro, completos, não completados, hora de pico ---------- */
@@ -726,10 +727,10 @@ window.DASH_CONFIG = {
   $('datelabel').onclick = function(){ S.date = ymd(new Date()); load(); };
   function setView(v){
     S.view = v;
-    ['agenda','lista','resumo','faltas'].forEach(function(x){ $('v-' + x).setAttribute('aria-pressed', v === x); });
+    ['agenda','lista','resumo','faltas','cliente'].forEach(function(x){ $('v-' + x).setAttribute('aria-pressed', v === x); });
     render(); if (v === 'resumo' && S.period !== 'dia') loadRange(); if (v === 'faltas') loadFaltas();
   }
-  $('v-agenda').onclick = function(){ setView('agenda'); }; $('v-lista').onclick = function(){ setView('lista'); }; $('v-resumo').onclick = function(){ setView('resumo'); }; $('v-faltas').onclick = function(){ setView('faltas'); };
+  $('v-agenda').onclick = function(){ setView('agenda'); }; $('v-lista').onclick = function(){ setView('lista'); }; $('v-resumo').onclick = function(){ setView('resumo'); }; $('v-faltas').onclick = function(){ setView('faltas'); }; $('v-cliente').onclick = function(){ setView('cliente'); };
   $('view').addEventListener('click', function(e){
     var fp = e.target.closest('[data-fp]'); if (fp) { S.fperiod = fp.getAttribute('data-fp'); render(); loadFaltas(); return; }
     var ff = e.target.closest('[data-ff]'); if (ff) { S.ffilter = ff.getAttribute('data-ff'); render(); return; }
@@ -840,6 +841,124 @@ window.DASH_CONFIG = {
     try { localStorage.setItem('caravela_admin_session', loggedStaff.id); } catch(x){}
     try { actx = actx || new (window.AudioContext || window.webkitAudioContext)(); if (actx.resume) actx.resume(); } catch(x){}
     showApp();
+  }
+
+  /* ---------- separador Cliente: procurar telemóvel, ver o Cartão Caravela
+     e confirmar o corte. Dados reais (tabelas customers/customer_history/
+     pins do Supabase da Caravela) — a mesma lógica de fidelização do
+     "Painel do Barbeiro" original do site (10 cortes = 1 grátis + sobe de
+     nível: Normal → Dourado → Premium). */
+  var CYCLE_LENGTH = 10;
+  var TIER_ORDER = ['normal', 'gold', 'premium'];
+  var TIER_LABELS = { normal: 'Normal', gold: 'Dourado', premium: 'Premium' };
+  var TIER_PERKS = {
+    normal: [],
+    gold: ['Sobrancelhas grátis em todos os cortes'],
+    premium: ['2€ de desconto em todos os serviços'],
+  };
+  function nextTier(tier){
+    var i = TIER_ORDER.indexOf(tier); if (i === -1) i = 0;
+    return TIER_ORDER[Math.min(i + 1, TIER_ORDER.length - 1)];
+  }
+  var CL = { phone:'', customer:null, hasPin:false, loading:false };
+
+  function fetchClient(phone){
+    return Promise.all([
+      authSb.from('customers').select('*').eq('phone', phone).maybeSingle(),
+      authSb.from('pins').select('pin_hash').eq('phone', phone).maybeSingle(),
+    ]).then(function(res){
+      if (res[0].error) throw res[0].error;
+      if (res[1].error) throw res[1].error;
+      CL.customer = res[0].data || null;
+      CL.hasPin = !!(res[1].data && res[1].data.pin_hash);
+    });
+  }
+
+  function confirmCorte(phone, name, oldTier, oldStamps){
+    var newStamps = oldStamps + 1, freeCut = false, newTier = oldTier;
+    if (newStamps >= CYCLE_LENGTH) { freeCut = true; newStamps = 0; newTier = nextTier(oldTier); }
+    var btn = $('cl-confirm'); if (btn) btn.disabled = true;
+    authSb.from('customers').upsert({ phone: phone, name: name, stamps: newStamps, tier: newTier })
+      .then(function(r){ if (r.error) throw r.error; return authSb.from('customer_history').insert({ phone: phone, date: ymd(new Date()), service: 'corte', redeemed: freeCut }); })
+      .then(function(r){ if (r.error) throw r.error; return fetchClient(phone); })
+      .then(function(){
+        var msg = 'Corte confirmado.';
+        if (freeCut) { msg = 'Corte confirmado. 10º corte grátis aplicado!'; if (newTier !== oldTier) msg += ' Este cliente subiu para ' + TIER_LABELS[newTier] + '.'; }
+        toast(msg); CL.loading = false; render();
+      })
+      .catch(function(){ toast('Não foi possível gravar agora. Tenta de novo.'); if (btn) btn.disabled = false; });
+  }
+
+  function clientCardHtml(){
+    var c = CL.customer, isNew = !c;
+    var tier = (c && c.tier) || 'normal', stamps = c ? (c.stamps || 0) : 0;
+    var perks = TIER_PERKS[tier] || [];
+    var nameField = isNew
+      ? '<p style="color:var(--novo);font-size:.85rem;margin:0 0 .6rem">Cliente novo. Pergunta o nome antes de começar o corte.</p>' +
+        '<div style="margin-bottom:1rem;max-width:340px"><label for="cl-name">Nome do cliente</label><input id="cl-name" placeholder="Nome"></div>'
+      : '';
+    return nameField +
+      '<div class="rows" style="margin-bottom:1rem;max-width:340px">' +
+        '<div class="rrow" style="grid-template-columns:1fr auto"><span>Nome</span><span id="cl-nameval">' + esc((c && c.name) || 'Novo cliente') + '</span></div>' +
+        '<div class="rrow" style="grid-template-columns:1fr auto"><span>Carimbos</span><span>' + stamps + ' de ' + CYCLE_LENGTH + ' (10º grátis)</span></div>' +
+        '<div class="rrow" style="grid-template-columns:1fr auto"><span>Nível</span><span>' + esc(TIER_LABELS[tier]) + (perks.length ? ': ' + esc(perks.join(' + ')) : '') + '</span></div>' +
+      '</div>' +
+      '<div style="max-width:340px">' +
+      '<button class="btn btn-primary" id="cl-confirm" style="width:100%;margin-bottom:1rem">Confirmar Corte</button>' +
+      '<div style="margin-bottom:.6rem"><label for="cl-pin">' + (CL.hasPin ? 'Repor PIN (novo)' : 'Criar PIN para o cliente') + '</label><input id="cl-pin" type="tel" inputmode="numeric" maxlength="4" placeholder="4 dígitos"></div>' +
+      '<button class="btn" id="cl-pin-go" style="width:100%;margin-bottom:1rem">' + (CL.hasPin ? 'Repor PIN' : 'Criar PIN') + '</button>' +
+      '<button class="btn btn-ghost" id="cl-back" style="width:100%">‹ Procurar outro número</button>' +
+      '</div>';
+  }
+
+  function bindClientCard(){
+    var nameInput = $('cl-name');
+    if (nameInput) nameInput.addEventListener('input', function(){ $('cl-nameval').textContent = nameInput.value.trim() || 'Novo cliente'; });
+    $('cl-confirm').onclick = function(){
+      var c = CL.customer;
+      var name = nameInput ? nameInput.value.trim() : ((c && c.name) || '');
+      if (!c && !name) { toast('Pergunta o nome do cliente antes de confirmar.'); return; }
+      confirmCorte(CL.phone, name, (c && c.tier) || 'normal', c ? (c.stamps || 0) : 0);
+    };
+    $('cl-pin-go').onclick = function(){
+      var pin = $('cl-pin').value.trim();
+      if (!/^\d{4}$/.test(pin)) { toast('O PIN tem 4 dígitos.'); return; }
+      hashPin(CL.phone, pin).then(function(hash){
+        return authSb.from('pins').upsert({ phone: CL.phone, pin_hash: hash });
+      }).then(function(r){ if (r.error) throw r.error; CL.hasPin = true; toast('PIN guardado. Dá este PIN ao cliente.'); })
+        .catch(function(){ toast('Não consegui guardar o PIN.'); });
+    };
+    $('cl-back').onclick = function(){ CL = { phone:'', customer:null, hasPin:false, loading:false }; render(); };
+  }
+
+  function renderCliente(){
+    var html = '<div class="panel"><h3>Confirmar Corte</h3><div class="sub">Procura o cliente pelo telemóvel para ver o Cartão Caravela e confirmar o corte.</div>';
+    if (!CL.phone) {
+      html += '<div style="max-width:340px"><label for="cl-phone">Telemóvel do cliente</label><input id="cl-phone" type="tel" inputmode="tel" placeholder="912 345 678"></div>' +
+        '<button class="btn btn-primary" id="cl-go" style="margin-top:.8rem">Procurar Cliente</button>';
+    } else if (CL.loading) {
+      html += '<p style="color:var(--soft)">A procurar…</p>';
+    } else {
+      html += clientCardHtml();
+    }
+    html += '</div>';
+    $('view').innerHTML = html;
+    if (!CL.phone) {
+      var input = $('cl-phone');
+      var go = function(){
+        var digits = input.value.replace(/\D/g, '');
+        if (digits.length < 9) { toast('Escreve um número de telemóvel válido.'); return; }
+        CL = { phone: digits, customer:null, hasPin:false, loading:true };
+        render();
+        fetchClient(digits).then(function(){ CL.loading = false; render(); })
+          .catch(function(){ toast('Não consegui procurar agora. Tenta de novo.'); CL = { phone:'', customer:null, hasPin:false, loading:false }; render(); });
+      };
+      input.addEventListener('keydown', function(e){ if (e.key === 'Enter') go(); });
+      $('cl-go').onclick = go;
+      input.focus();
+    } else if (!CL.loading) {
+      bindClientCard();
+    }
   }
 
   /* sessão */
