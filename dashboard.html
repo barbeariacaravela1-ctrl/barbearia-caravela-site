@@ -45,6 +45,7 @@
 
   .login{min-height:100dvh;display:grid;place-items:center;padding:1.25rem}
   .login-card{width:100%;max-width:360px;background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:1.5rem;display:flex;flex-direction:column;gap:1rem}
+  #login-flow{display:flex;flex-direction:column;gap:1rem}
   .login-card h1{margin:0;font-size:1.3rem}
   .login-card p{margin:0;color:var(--soft);font-size:.9rem}
   .err{background:var(--bad-bg);color:var(--bad);border-radius:10px;padding:.6rem .8rem;font-size:.88rem}
@@ -173,13 +174,10 @@ window.DASH_CONFIG = {
 </script>
 
 <section class="login" id="login" hidden>
-  <form class="login-card" id="login-form">
-    <div><h1 id="login-title">Agenda</h1><p>Entra com o teu telemóvel e o PIN de 6 dígitos.</p></div>
-    <div><label for="lg-phone">Telemóvel</label><input id="lg-phone" type="tel" inputmode="tel" autocomplete="username" placeholder="912 345 678" required></div>
-    <div><label for="lg-pin">PIN</label><input id="lg-pin" type="password" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="current-password" placeholder="6 dígitos" required></div>
-    <div class="err" id="lg-err" hidden></div>
-    <button class="btn btn-primary" id="lg-btn">Entrar</button>
-  </form>
+  <div class="login-card">
+    <h1 id="login-title">Agenda</h1>
+    <div id="login-flow"></div>
+  </div>
 </section>
 
 <div id="app" hidden>
@@ -739,30 +737,138 @@ window.DASH_CONFIG = {
     S.period = p.getAttribute('data-period'); if (S.period === 'dia') render(); else { render(); loadRange(); }
   });
 
+  /* ---------- login dos barbeiros ----------
+     Mesmo telemóvel + PIN de 4 dígitos que o "Painel do Barbeiro" do site
+     (mesma tabela `pins` no Supabase da Caravela). Quem já tem PIN criado no
+     site entra aqui com o mesmo PIN, e vice-versa. Isto autentica quem é;
+     os dados da agenda em si continuam de exemplo (ver banner acima). */
+  var REAL_SUPABASE_URL = 'https://ntymqhgdrtqxpglpfwno.supabase.co';
+  var REAL_SUPABASE_KEY = 'sb_publishable_uZJR817xmLpslvS_GYLsgQ_Ih2jOXbT';
+  var STAFF = [
+    { id:'vasco', name:'Vasco', phone:'918450592' },
+    { id:'filipe', name:'Filipe', phone:'911879949' },
+    { id:'lagu', name:'Lagu', phone:'915524194' },
+    { id:'demo', name:'Conta de Teste', phone:'999999999' }
+  ];
+  var authSb = null, loggedStaff = null;
+  var auth = { step:'phone', phone:'', staff:null, err:'' };
+
+  function hashPin(phone, pin){
+    var data = new TextEncoder().encode('caravela:' + phone + ':' + pin);
+    if (!(window.crypto && window.crypto.subtle)) return Promise.resolve(null);
+    return window.crypto.subtle.digest('SHA-256', data).then(function(buf){
+      return Array.prototype.map.call(new Uint8Array(buf), function(b){ return b.toString(16).padStart(2, '0'); }).join('');
+    });
+  }
+
+  function renderAuth(){
+    var el = $('login-flow');
+    if (auth.step === 'phone') {
+      el.innerHTML =
+        '<p style="margin:0;color:var(--soft);font-size:.9rem">Entra com o teu telemóvel. É o mesmo login do Painel do Barbeiro no site.</p>' +
+        '<div><label for="au-phone">Telemóvel</label><input id="au-phone" type="tel" inputmode="tel" autocomplete="username" placeholder="912 345 678"></div>' +
+        (auth.err ? '<div class="err">' + esc(auth.err) + '</div>' : '') +
+        '<button class="btn btn-primary" id="au-go" type="button">Continuar</button>';
+      var input = $('au-phone'); input.value = auth.phone;
+      var go = function(){
+        var digits = input.value.replace(/\D/g, '');
+        var staff = STAFF.find(function(s){ return s.phone === digits; });
+        if (!staff) { auth.err = 'Número não reconhecido.'; renderAuth(); return; }
+        auth.err = ''; auth.phone = digits; auth.staff = staff; auth.step = 'checking'; renderAuth();
+        authSb.from('pins').select('pin_hash').eq('phone', digits).maybeSingle().then(function(r){
+          if (r.error) throw r.error;
+          auth.step = (r.data && r.data.pin_hash) ? 'enter-pin' : 'create-pin';
+          renderAuth();
+        }).catch(function(){ auth.err = 'Sem ligação. Tenta de novo.'; auth.step = 'phone'; renderAuth(); });
+      };
+      input.addEventListener('keydown', function(e){ if (e.key === 'Enter') go(); });
+      $('au-go').onclick = go;
+      input.focus();
+    } else if (auth.step === 'checking') {
+      el.innerHTML = '<p style="margin:0;color:var(--soft);font-size:.9rem">Um momento…</p>';
+    } else if (auth.step === 'create-pin') {
+      el.innerHTML =
+        '<p style="margin:0;color:var(--soft);font-size:.9rem">Olá, ' + esc(auth.staff.name) + '. Primeira vez aqui: cria um PIN de 4 dígitos.</p>' +
+        '<div><label for="au-pin1">PIN</label><input id="au-pin1" type="password" inputmode="numeric" maxlength="4" placeholder="4 dígitos"></div>' +
+        '<div><label for="au-pin2">Repete o PIN</label><input id="au-pin2" type="password" inputmode="numeric" maxlength="4" placeholder="4 dígitos"></div>' +
+        (auth.err ? '<div class="err">' + esc(auth.err) + '</div>' : '') +
+        '<button class="btn btn-primary" id="au-go" type="button">Criar PIN e entrar</button>' +
+        '<button class="btn btn-ghost" id="au-back" type="button">Voltar</button>';
+      $('au-back').onclick = function(){ auth = { step:'phone', phone:auth.phone, staff:null, err:'' }; renderAuth(); };
+      var goCreate = function(){
+        var p1 = $('au-pin1').value.trim(), p2 = $('au-pin2').value.trim();
+        if (!/^\d{4}$/.test(p1)) { auth.err = 'O PIN tem 4 dígitos.'; renderAuth(); return; }
+        if (p1 !== p2) { auth.err = 'Os PIN não coincidem.'; renderAuth(); return; }
+        auth.err = '';
+        hashPin(auth.phone, p1).then(function(hash){
+          return authSb.from('pins').upsert({ phone: auth.phone, pin_hash: hash });
+        }).then(function(r){ if (r.error) throw r.error; completeLogin(); })
+          .catch(function(){ auth.err = 'Não consegui guardar o PIN.'; renderAuth(); });
+      };
+      $('au-go').onclick = goCreate;
+      $('au-pin1').focus();
+    } else if (auth.step === 'enter-pin') {
+      el.innerHTML =
+        '<p style="margin:0;color:var(--soft);font-size:.9rem">Olá, ' + esc(auth.staff.name) + '.</p>' +
+        '<div><label for="au-pin">PIN</label><input id="au-pin" type="password" inputmode="numeric" maxlength="4" placeholder="4 dígitos"></div>' +
+        (auth.err ? '<div class="err">' + esc(auth.err) + '</div>' : '') +
+        '<button class="btn btn-primary" id="au-go" type="button">Entrar</button>' +
+        '<button class="btn btn-ghost" id="au-back" type="button">Não és tu?</button>';
+      $('au-back').onclick = function(){ auth = { step:'phone', phone:'', staff:null, err:'' }; renderAuth(); };
+      var goEnter = function(){
+        var pin = $('au-pin').value.trim();
+        if (!/^\d{4}$/.test(pin)) { auth.err = 'O PIN tem 4 dígitos.'; renderAuth(); return; }
+        auth.err = '';
+        Promise.all([
+          hashPin(auth.phone, pin),
+          authSb.from('pins').select('pin_hash').eq('phone', auth.phone).maybeSingle(),
+        ]).then(function(res){
+          var hash = res[0], r = res[1];
+          if (r.error) throw r.error;
+          if (hash && r.data && hash === r.data.pin_hash) completeLogin();
+          else { auth.err = 'PIN errado.'; renderAuth(); }
+        }).catch(function(){ auth.err = 'Sem ligação. Tenta de novo.'; renderAuth(); });
+      };
+      $('au-go').onclick = goEnter;
+      $('au-pin').addEventListener('keydown', function(e){ if (e.key === 'Enter') goEnter(); });
+      $('au-pin').focus();
+    }
+  }
+
+  function completeLogin(){
+    loggedStaff = auth.staff;
+    try { localStorage.setItem('caravela_admin_session', loggedStaff.id); } catch(x){}
+    try { actx = actx || new (window.AudioContext || window.webkitAudioContext)(); if (actx.resume) actx.resume(); } catch(x){}
+    showApp();
+  }
+
   /* sessão */
   function showApp(){
-    $('login').hidden = true; $('app').hidden = false; $('biz').textContent = CFG.businessName; try { var ph = sessionStorage.getItem('tsb_demo_phone'); if (ph) $('biz').innerHTML = esc(CFG.businessName) + ' <span style="font-weight:500;color:var(--faint);font-size:.8rem">· ' + esc(ph) + '</span>'; } catch(x){} $('demo-note').hidden = !store.demo;
+    $('login').hidden = true; $('app').hidden = false;
+    $('biz').innerHTML = esc(CFG.businessName) + (loggedStaff ? ' <span style="font-weight:500;color:var(--faint);font-size:.8rem">· ' + esc(loggedStaff.name) + '</span>' : '');
+    $('demo-note').hidden = !store.demo;
     load();
     store.subscribe(onEvent, function(on){ $('live').classList.toggle('on', on); $('live-txt').textContent = on ? 'Ao vivo' : 'Sem ligação'; });
     setInterval(function(){ if (!document.hidden) { if (!store.demo) load(); else render(); } }, 60000);
   }
   $('login-title').textContent = CFG.businessName;
-  $('login-form').addEventListener('submit', function(e){
-    e.preventDefault(); var btn = $('lg-btn'); btn.disabled = true; $('lg-err').hidden = true;
-    try { actx = actx || new (window.AudioContext || window.webkitAudioContext)(); if (actx.resume) actx.resume(); } catch(x){}
-    store.login($('lg-phone').value, $('lg-pin').value).then(showApp).catch(function(err){ $('lg-err').textContent = err.message || 'Não foi possível entrar.'; $('lg-err').hidden = false; btn.disabled = false; });
-  });
-  $('logout').onclick = function(){ store.logout().then(function(){ if (CFG.demoExitUrl) location.href = CFG.demoExitUrl; else location.reload(); }); };
+  $('logout').onclick = function(){
+    try { localStorage.removeItem('caravela_admin_session'); } catch(x){}
+    loggedStaff = null;
+    location.reload();
+  };
 
   function boot(){
-    if (CFG.demoExitUrl) { var okp = null; try { okp = sessionStorage.getItem('tsb_demo_phone'); } catch(x){} if (!okp) { location.replace(CFG.demoExitUrl); return; } }
+    authSb = window.supabase.createClient(REAL_SUPABASE_URL, REAL_SUPABASE_KEY);
     store = (CFG.supabaseUrl && CFG.supabaseKey && window.supabase) ? supabaseStore() : demoStore();
-    store.session().then(function(ok){ if (ok) showApp(); else { $('login').hidden = false; $('lg-phone').focus(); } }).catch(function(){ $('login').hidden = false; });
+    var savedId = null; try { savedId = localStorage.getItem('caravela_admin_session'); } catch(x){}
+    var restored = savedId && STAFF.find(function(s){ return s.id === savedId; });
+    if (restored) { loggedStaff = restored; showApp(); return; }
+    $('login').hidden = false;
+    renderAuth();
   }
-  if (CFG.supabaseUrl && CFG.supabaseKey) {
-    var s = document.createElement('script'); s.src = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2';
-    s.onload = boot; s.onerror = function(){ alert('Não consegui carregar o Supabase.'); }; document.head.appendChild(s);
-  } else boot();
+  var sbScript = document.createElement('script'); sbScript.src = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2';
+  sbScript.onload = boot; sbScript.onerror = function(){ alert('Não consegui carregar o Supabase.'); }; document.head.appendChild(sbScript);
 })();
 </script>
 </body>
