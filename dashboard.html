@@ -14,6 +14,7 @@
     --ok:#2f6f5e; --ok-bg:#dcede6;
     --done:#6b6a63; --done-bg:#e6e4dd;
     --bad:#a23b2e; --bad-bg:#f3dedb;
+    --chegou:#1d5fa8; --chegou-bg:#e0ecf8;
     --radius:12px; --rowh:44px;
     font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;
   }
@@ -25,6 +26,7 @@
       --ok:#6fc2a8; --ok-bg:#1f342d;
       --done:#a9a89f; --done-bg:#2d2b28;
       --bad:#e58a7c; --bad-bg:#3b2421;
+      --chegou:#7db4ec; --chegou-bg:#1d2d40;
       --accent:#c2586a;
     }
   }
@@ -92,6 +94,7 @@
   .blk.confirmado{border-left-color:var(--ok);background:var(--ok-bg)}
   .blk.concluido{border-left-color:var(--done);background:var(--done-bg);opacity:.75}
   .blk.faltou,.blk.cancelado{border-left-color:var(--bad);background:var(--bad-bg);opacity:.6;text-decoration:line-through}
+  .blk.chegou{border-left-color:var(--chegou);background:var(--chegou-bg)}
   .blk.fresh{animation:flash 2.4s ease-out}
   @keyframes flash{0%{box-shadow:0 0 0 3px var(--novo)}100%{box-shadow:0 0 0 0 transparent}}
   .blk.lock{background:repeating-linear-gradient(45deg,var(--surface-2),var(--surface-2) 6px,transparent 6px,transparent 12px);border-left:4px solid var(--faint);color:var(--soft)}
@@ -109,6 +112,7 @@
   .pill.confirmado{background:var(--ok-bg);color:var(--ok)}
   .pill.concluido{background:var(--done-bg);color:var(--done)}
   .pill.faltou,.pill.cancelado{background:var(--bad-bg);color:var(--bad)}
+  .pill.chegou{background:var(--chegou-bg);color:var(--chegou)}
   .empty{text-align:center;color:var(--faint);padding:3rem 1rem}
 
   .fabs{position:fixed;right:1rem;bottom:1rem;z-index:20;display:flex;gap:.5rem}
@@ -236,6 +240,8 @@ window.DASH_CONFIG = {
 
 <dialog id="dlg-det"><div class="form det" id="det"></div></dialog>
 
+<dialog id="dlg-receipt"><div class="form" id="receipt-body"></div></dialog>
+
 <dialog id="dlg-block"><form class="form" id="block-form" method="dialog">
   <h2>Bloquear tempo</h2>
   <div class="two">
@@ -259,7 +265,7 @@ window.DASH_CONFIG = {
   document.title = CFG.businessName + ' · Agenda';
 
   var L = Object.assign({ pro:'Barbeiro', proLower:'barbeiro', done:'Cortes completos', doneNone:'Ainda nenhum corte concluído.', doneOnly:'Só cortes concluídos', closed:'Dia de descanso da barbearia.' }, CFG.labels || {});
-  var STATUS = { novo:'Novo', confirmado:'Confirmado', concluido:'Concluído', faltou:'Faltou', cancelado:'Cancelado' };
+  var STATUS = { novo:'Novo', confirmado:'Confirmado', chegou:'Cliente chegou', concluido:'Concluído', faltou:'Faltou', cancelado:'Cancelado' };
   var SLOT = CFG.slot || 30;
 
   function $(id){ return document.getElementById(id); }
@@ -658,12 +664,41 @@ window.DASH_CONFIG = {
       .catch(function(err){ toast('Erro: ' + (err.message || err)); });
   });
 
+  function openReceipt(m){
+    var msg = 'Olá ' + m.name + ', obrigado pela visita' + (CFG.businessName ? ' a ' + CFG.businessName : '') + '!\n\n' +
+      m.service + ' - ' + eur(priceOf(m)) + '\n' +
+      'Data: ' + m.date + ' às ' + m.time + '\n' +
+      'Profissional: ' + barberName(m.barber_id) + '\n\nAté à próxima!';
+    var wa = 'https://wa.me/351' + digits(m.phone) + '?text=' + encodeURIComponent(msg);
+    $('receipt-body').innerHTML =
+      '<h2>Enviar resumo do serviço</h2>' +
+      '<p style="color:var(--soft);font-size:.85rem;margin:0 0 1rem">Não é uma fatura com valor fiscal, é só uma mensagem com os detalhes para o cliente.</p>' +
+      '<div class="rows" style="margin-bottom:1rem">' +
+        '<div class="rrow" style="grid-template-columns:1fr auto"><span>Serviço</span><span>' + esc(m.service) + '</span></div>' +
+        '<div class="rrow" style="grid-template-columns:1fr auto"><span>Valor</span><span>' + esc(eur(priceOf(m))) + '</span></div>' +
+        '<div class="rrow" style="grid-template-columns:1fr auto"><span>Profissional</span><span>' + esc(barberName(m.barber_id)) + '</span></div>' +
+      '</div>' +
+      '<a class="btn btn-primary" style="width:100%;display:block;box-sizing:border-box;text-align:center;text-decoration:none;margin-bottom:.6rem" href="' + wa + '" target="_blank" rel="noopener">Enviar por WhatsApp</a>' +
+      '<div style="margin-bottom:.6rem"><label for="rc-email">Email do cliente (opcional)</label><input id="rc-email" type="email" placeholder="cliente@email.com"></div>' +
+      '<button class="btn" id="rc-email-go" style="width:100%;margin-bottom:1rem">Enviar por email</button>' +
+      '<button class="btn btn-ghost" id="rc-close" style="width:100%">Agora não</button>';
+    $('rc-close').onclick = function(){ $('dlg-receipt').close(); };
+    $('rc-email-go').onclick = function(){
+      var email = $('rc-email').value.trim();
+      if (!email) { toast('Escreve o email do cliente.'); return; }
+      location.href = 'mailto:' + encodeURIComponent(email) + '?subject=' + encodeURIComponent('O teu serviço' + (CFG.businessName ? ' em ' + CFG.businessName : '')) + '&body=' + encodeURIComponent(msg);
+    };
+    $('dlg-receipt').showModal();
+  }
+
   function openDet(id){
     var m = S.m.find(function(x){ return x.id === id; }); if (!m) return;
     var end = toTime(toMin(m.time) + m.duration_min);
     var acts = '';
     if (m.status === 'novo') acts += '<button class="btn btn-primary" data-to="confirmado">Confirmar</button>';
-    if (m.status === 'novo' || m.status === 'confirmado') acts += '<button class="btn btn-primary" data-to="concluido">Concluído</button><button class="btn" data-why="faltou">Faltou</button><button class="btn btn-danger" data-why="cancelado">Cancelar</button>';
+    if (m.status === 'novo' || m.status === 'confirmado') acts += '<button class="btn btn-primary" data-to="chegou">Cliente chegou</button>';
+    if (m.status === 'chegou') acts += '<button class="btn btn-primary" data-to="concluido">Concluído</button>';
+    if (m.status === 'novo' || m.status === 'confirmado' || m.status === 'chegou') acts += '<button class="btn" data-why="faltou">Faltou</button><button class="btn btn-danger" data-why="cancelado">Cancelar</button>';
     else acts += '<button class="btn" data-to="novo">Repor</button>';
     $('det').innerHTML =
       '<h2>' + esc(m.name) + '</h2>' +
@@ -676,9 +711,12 @@ window.DASH_CONFIG = {
     $('det').querySelector('[data-x]').onclick = function(){ $('dlg-det').close(); };
     $('det').querySelectorAll('[data-to]').forEach(function(b){
       b.onclick = function(){
+        var to = b.getAttribute('data-to');
         b.disabled = true;
-        store.updateM(id, { status:b.getAttribute('data-to') }).then(function(r){
+        store.updateM(id, { status:to }).then(function(r){
           var i = S.m.findIndex(function(x){ return x.id === id; }); if (i >= 0) S.m[i] = r; render(); $('dlg-det').close();
+          if (to === 'chegou') toast('Avisámos ' + barberName(r.barber_id) + ': o cliente chegou.');
+          if (to === 'concluido') openReceipt(r);
         }).catch(function(err){ toast('Erro: ' + (err.message || err)); b.disabled = false; });
       };
     });
@@ -885,8 +923,36 @@ window.DASH_CONFIG = {
         var msg = 'Corte confirmado.';
         if (freeCut) { msg = 'Corte confirmado. 10º corte grátis aplicado!'; if (newTier !== oldTier) msg += ' Este cliente subiu para ' + TIER_LABELS[newTier] + '.'; }
         toast(msg); CL.loading = false; render();
+        openCorteReceipt(phone, name, newStamps, newTier, freeCut);
       })
       .catch(function(){ toast('Não foi possível gravar agora. Tenta de novo.'); if (btn) btn.disabled = false; });
+  }
+
+  /* Confirmação do corte por WhatsApp/email, com o cartão de fidelização
+     atualizado. Sem preço: esta tela não escolhe serviço nem valor, só
+     confirma o carimbo. Não é uma fatura com valor fiscal. */
+  function openCorteReceipt(phone, name, stamps, tier, freeCut){
+    var perks = TIER_PERKS[tier] || [];
+    var msg = 'Olá ' + name + ', obrigado pela visita à Barbearia Caravela!\n\n' +
+      (freeCut ? '10º corte grátis aplicado! ' : '') +
+      'Carimbos: ' + stamps + ' de ' + CYCLE_LENGTH + ' (10º grátis)\n' +
+      'Nível: ' + TIER_LABELS[tier] + (perks.length ? ' — ' + perks.join(' + ') : '') +
+      '\n\nAté à próxima!';
+    var wa = 'https://wa.me/351' + digits(phone) + '?text=' + encodeURIComponent(msg);
+    $('receipt-body').innerHTML =
+      '<h2>Enviar confirmação ao cliente</h2>' +
+      '<p style="color:var(--soft);font-size:.85rem;margin:0 0 1rem">Confirma o corte e o estado do Cartão Caravela. Não é uma fatura com valor fiscal.</p>' +
+      '<a class="btn btn-primary" style="width:100%;display:block;box-sizing:border-box;text-align:center;text-decoration:none;margin-bottom:.6rem" href="' + wa + '" target="_blank" rel="noopener">Enviar por WhatsApp</a>' +
+      '<div style="margin-bottom:.6rem"><label for="rc-email">Email do cliente (opcional)</label><input id="rc-email" type="email" placeholder="cliente@email.com"></div>' +
+      '<button class="btn" id="rc-email-go" style="width:100%;margin-bottom:1rem">Enviar por email</button>' +
+      '<button class="btn btn-ghost" id="rc-close" style="width:100%">Agora não</button>';
+    $('rc-close').onclick = function(){ $('dlg-receipt').close(); };
+    $('rc-email-go').onclick = function(){
+      var email = $('rc-email').value.trim();
+      if (!email) { toast('Escreve o email do cliente.'); return; }
+      location.href = 'mailto:' + encodeURIComponent(email) + '?subject=' + encodeURIComponent('O teu Cartão Caravela') + '&body=' + encodeURIComponent(msg);
+    };
+    $('dlg-receipt').showModal();
   }
 
   function clientCardHtml(){
